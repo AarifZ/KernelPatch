@@ -11,6 +11,11 @@
 #include <syscall.h>
 #include <linux/string.h>
 #include <asm/current.h>
+#include <asm/unistd.h>  // For syscall numbers
+
+#ifndef __NR_open
+#define __NR_open 2      // Define the system call number for open if not declared
+#endif
 
 KPM_NAME("kpm-syscall-hook-demo");
 KPM_VERSION("1.0.1");
@@ -42,7 +47,7 @@ void check_and_redirect_path(const char __user *filename) {
             
             // Redirect the path to /dev/null
             const char *redirect_path = "/dev/null";
-            copy_to_user((void __user *)filename, redirect_path, strlen(redirect_path) + 1);
+            strncpy_to_user((void __user *)filename, redirect_path, strlen(redirect_path) + 1);  // Use strncpy_to_user
         }
     }
 }
