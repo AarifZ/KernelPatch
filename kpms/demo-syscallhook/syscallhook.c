@@ -42,46 +42,19 @@ void before_openat_0(hook_fargs4_t *args, void *udata)
     char buf[1024];
     compat_strncpy_from_user(buf, filename, sizeof(buf));
 
-    struct task_struct *task = current;
-    pid_t pid = -1, tgid = -1;
-    if (__task_pid_nr_ns) {
-        pid = __task_pid_nr_ns(task, PIDTYPE_PID, 0);
-        tgid = __task_pid_nr_ns(task, PIDTYPE_TGID, 0);
-    }
-
-    args->local.data0 = (uint64_t)task;
-
-    pr_info("hook_chain_0 task: %llx, pid: %d, tgid: %d, openat dfd: %d, filename: %s, flag: %x, mode: %d\n", task, pid,
-            tgid, dfd, buf, flag, mode);
-}
-
-uint64_t open_counts = 0;
-
-void before_openat_0(hook_fargs4_t *args, void *udata) {
-    int dfd = (int)syscall_argn(args, 0);
-    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
-    int flag = (int)syscall_argn(args, 2);
-    umode_t mode = (int)syscall_argn(args, 3);
-
-    char buf[1024];
-    compat_strncpy_from_user(buf, filename, sizeof(buf));
-
+    // Check if the file path contains restricted directories and redirect or block
     if (strstr(buf, "/system") || strstr(buf, "/vendor") || strstr(buf, "/product")) {
         if (strstr(buf, "lineage") || strstr(buf, "addon.d")) {
             pr_info("Hiding access to: %s\n", buf);
             
+            // Redirect the path to /dev/null
             const char *redirect_path = "/dev/null";
             copy_to_user((void __user *)filename, redirect_path, strlen(redirect_path) + 1);
-            return;
+            return;  // Return here to stop further execution
         }
     }
 
     pr_info("Attempting to open: %s\n", buf);
-}
-
-void after_openat_1(hook_fargs4_t *args, void *udata)
-{
-    pr_info("hook_chain_1 after openat task: %llx\n", args->local.data0);
 }
 
 static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved)
@@ -103,8 +76,6 @@ static long syscall_hook_demo_init(const char *args, const char *event, void *__
         pr_info("function pointer hook ...");
         hook_type = FUNCTION_POINTER_CHAIN;
         err = fp_hook_syscalln(__NR_openat, 4, before_openat_0, 0, 0);
-        if (err) goto out;
-        err = fp_hook_syscalln(__NR_openat, 4, before_openat_1, after_openat_1, &open_counts);
     } else if (!strcmp("inline_hook", margs)) {
         pr_info("inline hook ...");
         hook_type = INLINE_CHAIN;
@@ -114,7 +85,6 @@ static long syscall_hook_demo_init(const char *args, const char *event, void *__
         return 0;
     }
 
-out:
     if (err) {
         pr_err("hook openat error: %d\n", err);
     } else {
@@ -137,8 +107,6 @@ static long syscall_hook_demo_exit(void *__user reserved)
         inline_unhook_syscall(__NR_openat, before_openat_0, 0);
     } else if (hook_type == FUNCTION_POINTER_CHAIN) {
         fp_unhook_syscall(__NR_openat, before_openat_0, 0);
-        fp_unhook_syscall(__NR_openat, before_openat_1, after_openat_1);
-    } else {
     }
     return 0;
 }
