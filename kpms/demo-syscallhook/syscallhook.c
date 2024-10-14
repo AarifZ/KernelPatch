@@ -13,7 +13,7 @@
 #include <asm/current.h>
 
 KPM_NAME("kpm-syscall-hook-demo");
-KPM_VERSION("1.0.0");
+KPM_VERSION("1.0.1");
 KPM_LICENSE("GPL v2");
 KPM_AUTHOR("bmax121");
 KPM_DESCRIPTION("KernelPatch Module System Call Hook Example");
@@ -21,8 +21,7 @@ KPM_DESCRIPTION("KernelPatch Module System Call Hook Example");
 const char *margs = 0;
 enum hook_type hook_type = NONE;
 
-enum pid_type
-{
+enum pid_type {
     PIDTYPE_PID,
     PIDTYPE_TGID,
     PIDTYPE_PGID,
@@ -32,17 +31,11 @@ enum pid_type
 struct pid_namespace;
 pid_t (*__task_pid_nr_ns)(struct task_struct *task, enum pid_type type, struct pid_namespace *ns) = 0;
 
-void before_openat_0(hook_fargs4_t *args, void *udata)
-{
-    int dfd = (int)syscall_argn(args, 0);
-    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
-    int flag = (int)syscall_argn(args, 2);
-    umode_t mode = (int)syscall_argn(args, 3);
-
+void check_and_redirect_path(const char __user *filename) {
     char buf[1024];
     compat_strncpy_from_user(buf, filename, sizeof(buf));
 
-    // Check if the file path contains restricted directories and redirect or block
+    // Check if the file path contains restricted directories and redirect/block
     if (strstr(buf, "/system") || strstr(buf, "/vendor") || strstr(buf, "/product")) {
         if (strstr(buf, "lineage") || strstr(buf, "addon.d")) {
             pr_info("Hiding access to: %s\n", buf);
@@ -50,15 +43,23 @@ void before_openat_0(hook_fargs4_t *args, void *udata)
             // Redirect the path to /dev/null
             const char *redirect_path = "/dev/null";
             copy_to_user((void __user *)filename, redirect_path, strlen(redirect_path) + 1);
-            return;  // Return here to stop further execution
         }
     }
-
-    pr_info("Attempting to open: %s\n", buf);
 }
 
-static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved)
-{
+void before_open(hook_fargs3_t *args, void *udata) {
+    const char __user *filename = (typeof(filename))syscall_argn(args, 0);
+    pr_info("Intercepting open syscall\n");
+    check_and_redirect_path(filename);
+}
+
+void before_openat(hook_fargs4_t *args, void *udata) {
+    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
+    pr_info("Intercepting openat syscall\n");
+    check_and_redirect_path(filename);
+}
+
+static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved) {
     margs = args;
     pr_info("kpm-syscall-hook-demo init ..., args: %s\n", margs);
 
@@ -75,42 +76,41 @@ static long syscall_hook_demo_init(const char *args, const char *event, void *__
     if (!strcmp("function_pointer_hook", margs)) {
         pr_info("function pointer hook ...");
         hook_type = FUNCTION_POINTER_CHAIN;
-        err = fp_hook_syscalln(__NR_openat, 4, before_openat_0, 0, 0);
+        err = fp_hook_syscalln(__NR_open, 3, before_open, 0, 0);
+        if (err) goto out;
+        err = fp_hook_syscalln(__NR_openat, 4, before_openat, 0, 0);
     } else if (!strcmp("inline_hook", margs)) {
         pr_info("inline hook ...");
         hook_type = INLINE_CHAIN;
-        err = inline_hook_syscalln(__NR_openat, 4, before_openat_0, 0, 0);
+        err = inline_hook_syscalln(__NR_open, 3, before_open, 0, 0);
+        if (err) goto out;
+        err = inline_hook_syscalln(__NR_openat, 4, before_openat, 0, 0);
     } else {
         pr_warn("unknown args: %s\n", margs);
         return 0;
     }
 
+out:
     if (err) {
-        pr_err("hook openat error: %d\n", err);
+        pr_err("hook syscall error: %d\n", err);
     } else {
-        pr_info("hook openat success\n");
+        pr_info("hook syscall success\n");
     }
     return 0;
 }
 
-static long syscall_hook_control0(const char *args, char *__user out_msg, int outlen)
-{
-    pr_info("syscall_hook control, args: %s\n", args);
-    return 0;
-}
-
-static long syscall_hook_demo_exit(void *__user reserved)
-{
+static long syscall_hook_demo_exit(void *__user reserved) {
     pr_info("kpm-syscall-hook-demo exit ...\n");
 
     if (hook_type == INLINE_CHAIN) {
-        inline_unhook_syscall(__NR_openat, before_openat_0, 0);
+        inline_unhook_syscall(__NR_open, before_open, 0);
+        inline_unhook_syscall(__NR_openat, before_openat, 0);
     } else if (hook_type == FUNCTION_POINTER_CHAIN) {
-        fp_unhook_syscall(__NR_openat, before_openat_0, 0);
+        fp_unhook_syscall(__NR_open, before_open, 0);
+        fp_unhook_syscall(__NR_openat, before_openat, 0);
     }
     return 0;
 }
 
 KPM_INIT(syscall_hook_demo_init);
-KPM_CTL0(syscall_hook_control0);
 KPM_EXIT(syscall_hook_demo_exit);
