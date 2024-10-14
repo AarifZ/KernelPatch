@@ -1,11 +1,6 @@
-ifndef TARGET_COMPILE
-    $(error TARGET_COMPILE not set)
-endif
+TARGET_COMPILE = $(shell uname -m)-$(shell uname -r)
 
-ifndef KP_DIR
-    KP_DIR = ../..
-endif
-
+KP_DIR = ../..
 
 CC = $(TARGET_COMPILE)gcc
 LD = $(TARGET_COMPILE)ld
@@ -14,11 +9,14 @@ INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include l
 
 INCLUDE_FLAGS := $(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
 
-objs := syscallhook.o
+# Add the KPM module source file
+KPM_MODULE = kpm-hide-lineage.c
 
-all: syscallhook.kpm
+objs := $(KPM_MODULE:.c=.o)
 
-syscallhook.kpm: ${objs}
+all: $(KPM_MODULE).kpm
+
+$(KPM_MODULE).kpm: ${objs}
 	${CC} -r -o $@ $^
 
 %.o: %.c
