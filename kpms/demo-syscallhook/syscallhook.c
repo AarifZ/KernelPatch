@@ -10,105 +10,84 @@
 #include <linux/uaccess.h>
 #include <syscall.h>
 #include <linux/string.h>
+#include <kputils.h>
 #include <asm/current.h>
-#include <asm/unistd.h>  // For syscall numbers
+#include <linux/fs.h>
+#include <linux/errno.h>
 
-#ifndef __NR_open
-#define __NR_open 2      // Define the system call number for open if not declared
-#endif
-
-KPM_NAME("kpm-syscall-hook-demo");
-KPM_VERSION("1.0.2");
+KPM_NAME("kpm-enhanced-syscall-hook");
+KPM_VERSION("1.0.0");
 KPM_LICENSE("GPL v2");
-KPM_AUTHOR("bmax121");
-KPM_DESCRIPTION("KernelPatch Module System Call Hook Example");
+KPM_AUTHOR("YourName");
+KPM_DESCRIPTION("Enhanced KernelPatch Module for System Call Interception");
 
 const char *margs = 0;
 enum hook_type hook_type = NONE;
 
-// Declare function pointers for the original open and openat syscalls
-void *orig_open = NULL;
-void *orig_openat = NULL;
-
-// Helper function to determine if a file path should be blocked
-int should_block_path(const char *buf) {
-    // Check if the file path contains restricted directories or keywords
-    if (strstr(buf, "/system") || strstr(buf, "/vendor") || strstr(buf, "/product")) {
-        if (strstr(buf, "lineage") || strstr(buf, "addon.d")) {
-            pr_info("Blocking access to: %s\n", buf);
-            return 1; // Block access
-        }
-    }
-    return 0; // Allow access
+// Function to check if a path should be hidden
+static int should_hide_path(const char *path)
+{
+    return (strstr(path, "/system") || strstr(path, "/vendor") || strstr(path, "/product")) &&
+           (strstr(path, "lineage") || strstr(path, "addon.d"));
 }
 
-// Callback function for open syscall
-void before_open(hook_fargs3_t *args, void *udata) {
-    const char __user *filename = (typeof(filename))syscall_argn(args, 0);
-    char buf[1024];
-    copy_from_user(buf, filename, sizeof(buf));
+void before_openat(hook_fargs4_t *args, void *udata)
+{
+    int dfd = (int)syscall_argn(args, 0);
+    const char __user *filename = (const char __user *)syscall_argn(args, 1);
+    int flag = (int)syscall_argn(args, 2);
+    umode_t mode = (umode_t)syscall_argn(args, 3);
 
-    // Block if the path is restricted
-    if (should_block_path(buf)) {
-        pr_info("Blocking file open: %s\n", buf);
-        args->local.retval = -EACCES;  // Return Permission Denied
+    char buf[PATH_MAX];
+    long ret = strncpy_from_user(buf, filename, sizeof(buf));
+    if (ret > 0 && should_hide_path(buf)) {
+        pr_info("Hiding path from access: %s\n", buf);
+        // Set flag to indicate hiding
+        args->local.data0 = 1;
+    } else {
+        args->local.data0 = 0;
     }
+
+    pr_info("Attempting to open: %s\n", buf);
 }
 
-// Callback function for openat syscall
-void before_openat(hook_fargs4_t *args, void *udata) {
-    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
-    char buf[1024];
-    copy_from_user(buf, filename, sizeof(buf));
-
-    // Block if the path is restricted
-    if (should_block_path(buf)) {
-        pr_info("Blocking file openat: %s\n", buf);
-        args->local.retval = -EACCES;  // Return Permission Denied
+void after_openat(hook_fargs4_t *args, void *udata)
+{
+    if (args->local.data0) {
+        // If we're hiding the path, return -ENOENT (No such file or directory)
+        syscall_set_retval(args, -ENOENT);
     }
 }
 
-static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved) {
-    // Get the original open and openat syscalls
-    orig_open = (typeof(orig_open))kallsyms_lookup_name("sys_open");
-    if (!orig_open) {
-        pr_err("failed to get sys_open address\n");
-        return -1;
-    }
+static long syscall_hook_init(const char *args, const char *event, void *__user reserved)
+{
+    margs = args;
+    pr_info("kpm-enhanced-syscall-hook init ..., args: %s\n", margs);
 
-    orig_openat = (typeof(orig_openat))kallsyms_lookup_name("sys_openat");
-    if (!orig_openat) {
-        pr_err("failed to get sys_openat address\n");
-        return -1;
-    }
+    hook_err_t err = HOOK_NO_ERR;
 
-    // Hook the open syscall using hook_wrap3
-    hook_err_t err = hook_wrap3((void *)orig_open, before_open, 0, 0);
+    hook_type = INLINE_CHAIN;
+    err = inline_hook_syscalln(__NR_openat, 4, before_openat, after_openat, 0);
+
     if (err) {
-        pr_err("hooking open error: %d\n", err);
-        return err;
+        pr_err("Hook openat error: %d\n", err);
+    } else {
+        pr_info("Hook openat success\n");
     }
-
-    // Hook the openat syscall using hook_wrap3
-    err = hook_wrap3((void *)orig_openat, before_openat, 0, 0);
-    if (err) {
-        pr_err("hooking openat error: %d\n", err);
-        return err;
-    }
-
-    pr_info("sys_open and sys_openat hooked successfully\n");
-    return 0;
-}
-
-static long syscall_hook_demo_exit(void *__user reserved) {
-    pr_info("kpm-syscall-hook-demo exit ...\n");
-
-    // Unhook the open and openat syscalls
-    hook_unwrap((void *)orig_open, before_open, 0);
-    hook_unwrap((void *)orig_openat, before_openat, 0);
 
     return 0;
 }
 
-KPM_INIT(syscall_hook_demo_init);
-KPM_EXIT(syscall_hook_demo_exit);
+static long syscall_hook_exit(void *__user reserved)
+{
+    pr_info("kpm-enhanced-syscall-hook exit ...\n");
+
+    if (hook_type == INLINE_CHAIN) {
+        inline_unhook_syscalln(__NR_openat, before_openat, after_openat);
+    }
+
+    return 0;
+}
+
+KPM_INIT(syscall_hook_init);
+KPM_EXIT(syscall_hook_exit);
