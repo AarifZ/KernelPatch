@@ -8,6 +8,8 @@
 #include <kputils.h>
 #include <asm/current.h>
 #include <linux/fs.h>
+#include <linux/errno.h>
+#include <linux/limits.h>  // For PATH_MAX
 
 KPM_NAME("kpm-enhanced-syscall-hook");
 KPM_VERSION("1.0.0");
@@ -19,7 +21,7 @@ const char *margs = 0;
 enum hook_type hook_type = NONE;
 
 // Function to check if a path should be hidden
-int should_hide_path(const char *path)
+static int should_hide_path(const char *path)
 {
     return (strstr(path, "/system") || strstr(path, "/vendor") || strstr(path, "/product")) &&
            (strstr(path, "lineage") || strstr(path, "addon.d"));
@@ -28,17 +30,16 @@ int should_hide_path(const char *path)
 void before_openat(hook_fargs4_t *args, void *udata)
 {
     int dfd = (int)syscall_argn(args, 0);
-    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
+    const char __user *filename = (const char __user *)syscall_argn(args, 1);
     int flag = (int)syscall_argn(args, 2);
     umode_t mode = (umode_t)syscall_argn(args, 3);
 
     char buf[PATH_MAX];
-    long ret = strncpy_from_user(buf, filename, sizeof(buf));
+    long ret = kf_strncpy_from_user(buf, filename, sizeof(buf));
     if (ret > 0 && should_hide_path(buf)) {
         pr_info("Hiding path from access: %s\n", buf);
-        // Redirect to /dev/null
-        args->local.data0 = 1; // Set flag to indicate redirection
-        syscall_set_argn(args, 1, "/dev/null");
+        // Set flag to indicate hiding
+        args->local.data0 = 1;
     } else {
         args->local.data0 = 0;
     }
@@ -49,8 +50,8 @@ void before_openat(hook_fargs4_t *args, void *udata)
 void after_openat(hook_fargs4_t *args, void *udata)
 {
     if (args->local.data0) {
-        // If we redirected, return -ENOENT (No such file or directory)
-        syscall_set_retval(args, -ENOENT);
+        // If we're hiding the path, return -ENOENT (No such file or directory)
+        syscall_set_retval((hook_fargs_t *)args, -ENOENT);
     }
 }
 
