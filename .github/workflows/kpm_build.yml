@@ -1,0 +1,147 @@
+name: KPM Build CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  Build-kpimg:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+          fetch-depth: 0
+
+      - name: Generate version
+        id: parse_version
+        run: |
+          MAJOR=$(grep '#define MAJOR' version | awk '{print $3}')
+          MINOR=$(grep '#define MINOR' version | awk '{print $3}')
+          PATCH=$(grep '#define PATCH' version | awk '{print $3}')
+          VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "Generated Version: $VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Extract branch name
+        shell: bash
+        id: extract_branch
+        run: |
+          echo "BRANCH=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+
+      - name: Install Compiler
+        run: |
+          curl -o arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz
+          tar -Jxf arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf.tar.xz
+
+      - name: Build kpimg
+        run: |
+          export TARGET_COMPILE=`pwd`/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-elf/bin/aarch64-none-elf-
+
+          cd kernel
+          make
+          mv kpimg kpimg-linux
+          mv kpimg.elf kpimg.elf-linux
+          make clean
+          export ANDROID=1
+          make
+          mv kpimg kpimg-android
+          mv kpimg.elf kpimg.elf-android
+
+          cd ..
+          cd kpms
+
+          cd demo-hello
+          make
+          if [ -f hello.kpm ]; then
+            mv hello.kpm demo-hello.kpm
+            echo "demo-hello.kpm successfully created."
+          else
+            echo "Error: demo-hello.kpm not found."
+            exit 1
+          fi
+
+          cd ../demo-inlinehook
+          make
+          if [ -f inlinehook.kpm ]; then
+            mv inlinehook.kpm demo-inlinehook.kpm
+            echo "demo-inlinehook.kpm successfully created."
+          else
+            echo "Error: demo-inlinehook.kpm not found."
+            exit 1
+          fi
+
+          cd ../demo-syscallhook
+          make
+          if [ -f syscallhook.kpm ]; then
+            mv syscallhook.kpm demo-syscallhook.kpm
+            echo "demo-syscallhook.kpm successfully created."
+          else
+            echo "Error: syscallhook.kpm not found."
+            exit 1
+          fi
+
+      - name: Upload elf
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            kernel/kpimg.elf-linux
+            kernel/kpimg.elf-android
+          name: kpimg.elf
+
+      - name: Release
+        uses: ncipollo/release-action@v1.14.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.parse_version.outputs.VERSION }}
+          artifacts: |
+            kernel/kpimg-linux
+            kernel/kpimg-android
+            kpms/demo-hello/demo-hello.kpm
+            kpms/demo-inlinehook/demo-inlinehook.kpm
+            kpms/demo-syscallhook/demo-syscallhook.kpm
+          generateReleaseNotes: true
+          omitBodyDuringUpdate: true
+          allowUpdates: true
+          makeLatest: true
+          replacesArtifacts: true
+
+  Release-user-lib:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Generate version
+        id: parse_version
+        run: |
+          MAJOR=$(grep '#define MAJOR' version | awk '{print $3}')
+          MINOR=$(grep '#define MINOR' version | awk '{print $3}')
+          PATCH=$(grep '#define PATCH' version | awk '{print $3}')
+          VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "Generated Version: $VERSION"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Zip-lib
+        run: |
+          export TARGET_COMPILE=placeholder
+          cd kernel
+          make hdr
+          cd ..
+          zip -r kpuser.zip user
+
+      - name: Release
+        uses: ncipollo/release-action@v1.14.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ steps.parse_version.outputs.VERSION }}
+          artifacts: |
+            kpuser.zip
+          allowUpdates: true
+          replacesArtifacts: true
+          omitBodyDuringUpdate: true
