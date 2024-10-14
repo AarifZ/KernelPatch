@@ -8,7 +8,7 @@
 #include <kputils.h>
 #include <asm/current.h>
 
-KPM_NAME("kpm-syscall-hook-demo");
+KPM_NAME("kpm-hide-lineage");
 KPM_VERSION("1.0.0");
 KPM_LICENSE("GPL v2");
 KPM_AUTHOR("Bard");
@@ -60,9 +60,9 @@ void before_openat_0(hook_fargs4_t *args, void *udata)
   }
 }
 
-static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved)
+static long kpm_hide_lineage_init(const char *args, const char *event, void *__user reserved)
 {
-  pr_info("kpm-syscall-hook-demo init ...\n");
+  pr_info("kpm-hide-lineage init ...\n");
 
   __task_pid_nr_ns = (typeof(__task_pid_nr_ns))kallsyms_lookup_name("__task_pid_nr_ns");
   pr_info("kernel function __task_pid_nr_ns addr: %llx\n", __task_pid_nr_ns);
@@ -78,14 +78,14 @@ static long syscall_hook_demo_init(const char *args, const char *event, void *__
   return 0;
 }
 
-static long kpm-syscall-hook-demo_exit(void *__user reserved)
+static long kpm_hide_lineage_exit(void *__user reserved)
 {
-  pr_info("syscall_hook_demo exit ...\n");
+  pr_info("kpm-hide-lineage exit ...\n");
 
   inline_unhook_syscalln(__NR_openat, before_openat_0, 0);
 
   return 0;
 }
 
-KPM_INIT(syscall_hook_demo_init);
-KPM_EXIT(syscall_hook_demo_exit);
+KPM_INIT(kpm_hide_lineage_init);
+KPM_EXIT(kpm_hide_lineage_exit);
