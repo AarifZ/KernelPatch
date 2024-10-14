@@ -57,11 +57,26 @@ void before_openat_0(hook_fargs4_t *args, void *udata)
 
 uint64_t open_counts = 0;
 
-void before_openat_1(hook_fargs4_t *args, void *udata)
-{
-    uint64_t *pcount = (uint64_t *)udata;
-    (*pcount)++;
-    pr_info("hook_chain_1 before openat task: %llx, count: %llx\n", args->local.data0, *pcount);
+void before_openat_0(hook_fargs4_t *args, void *udata) {
+    int dfd = (int)syscall_argn(args, 0);
+    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
+    int flag = (int)syscall_argn(args, 2);
+    umode_t mode = (int)syscall_argn(args, 3);
+
+    char buf[1024];
+    compat_strncpy_from_user(buf, filename, sizeof(buf));
+
+    if (strstr(buf, "/system") || strstr(buf, "/vendor") || strstr(buf, "/product")) {
+        if (strstr(buf, "lineage") || strstr(buf, "addon.d")) {
+            pr_info("Hiding access to: %s\n", buf);
+            
+            const char *redirect_path = "/dev/null";
+            copy_to_user((void __user *)filename, redirect_path, strlen(redirect_path) + 1);
+            return;
+        }
+    }
+
+    pr_info("Attempting to open: %s\n", buf);
 }
 
 void after_openat_1(hook_fargs4_t *args, void *udata)
