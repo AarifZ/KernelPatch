@@ -6,19 +6,22 @@ ifndef KP_DIR
     KP_DIR = ../..
 endif
 
-
 CC = $(TARGET_COMPILE)gcc
 LD = $(TARGET_COMPILE)ld
 
 INCLUDE_DIRS := . include patch/include linux/include linux/arch/arm64/include linux/tools/arch/arm64/include
-
 INCLUDE_FLAGS := $(foreach dir,$(INCLUDE_DIRS),-I$(KP_DIR)/kernel/$(dir))
 
-objs := syscallhook.o
+CFLAGS += -Wall -Werror
 
-all: syscallhook.kpm
+objs := syscallhook.o path_hiding.o
 
-syscallhook.kpm: ${objs}
+all: syscallhook.kpm path_hiding.kpm
+
+syscallhook.kpm: syscallhook.o
+	${CC} -r -o $@ $^
+
+path_hiding.kpm: path_hiding.o
 	${CC} -r -o $@ $^
 
 %.o: %.c
