@@ -18,7 +18,7 @@
 #endif
 
 KPM_NAME("kpm-syscall-hook-demo");
-KPM_VERSION("1.0.1");
+KPM_VERSION("1.0.2");
 KPM_LICENSE("GPL v2");
 KPM_AUTHOR("bmax121");
 KPM_DESCRIPTION("KernelPatch Module System Call Hook Example");
@@ -26,18 +26,13 @@ KPM_DESCRIPTION("KernelPatch Module System Call Hook Example");
 const char *margs = 0;
 enum hook_type hook_type = NONE;
 
-enum pid_type {
-    PIDTYPE_PID,
-    PIDTYPE_TGID,
-    PIDTYPE_PGID,
-    PIDTYPE_SID,
-    PIDTYPE_MAX,
-};
-struct pid_namespace;
-pid_t (*__task_pid_nr_ns)(struct task_struct *task, enum pid_type type, struct pid_namespace *ns) = 0;
+// Declare function pointers for the original open and openat syscalls
+void *orig_open = NULL;
+void *orig_openat = NULL;
 
+// Helper function to determine if a file path should be blocked
 int should_block_path(const char *buf) {
-    // Check if the file path contains restricted directories
+    // Check if the file path contains restricted directories or keywords
     if (strstr(buf, "/system") || strstr(buf, "/vendor") || strstr(buf, "/product")) {
         if (strstr(buf, "lineage") || strstr(buf, "addon.d")) {
             pr_info("Blocking access to: %s\n", buf);
@@ -47,80 +42,71 @@ int should_block_path(const char *buf) {
     return 0; // Allow access
 }
 
+// Callback function for open syscall
 void before_open(hook_fargs3_t *args, void *udata) {
     const char __user *filename = (typeof(filename))syscall_argn(args, 0);
     char buf[1024];
-    compat_strncpy_from_user(buf, filename, sizeof(buf));
+    copy_from_user(buf, filename, sizeof(buf));
 
-    pr_info("Intercepting open syscall: %s\n", buf);
-    
+    // Block if the path is restricted
     if (should_block_path(buf)) {
+        pr_info("Blocking file open: %s\n", buf);
         args->local.retval = -EACCES;  // Return Permission Denied
     }
 }
 
+// Callback function for openat syscall
 void before_openat(hook_fargs4_t *args, void *udata) {
     const char __user *filename = (typeof(filename))syscall_argn(args, 1);
     char buf[1024];
-    compat_strncpy_from_user(buf, filename, sizeof(buf));
+    copy_from_user(buf, filename, sizeof(buf));
 
-    pr_info("Intercepting openat syscall: %s\n", buf);
-    
+    // Block if the path is restricted
     if (should_block_path(buf)) {
+        pr_info("Blocking file openat: %s\n", buf);
         args->local.retval = -EACCES;  // Return Permission Denied
     }
 }
 
 static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved) {
-    margs = args;
-    pr_info("kpm-syscall-hook-demo init ..., args: %s\n", margs);
-
-    __task_pid_nr_ns = (typeof(__task_pid_nr_ns))kallsyms_lookup_name("__task_pid_nr_ns");
-    pr_info("kernel function __task_pid_nr_ns addr: %llx\n", __task_pid_nr_ns);
-
-    if (!margs) {
-        pr_warn("no args specified, skip hook\n");
-        return 0;
+    // Get the original open and openat syscalls
+    orig_open = (typeof(orig_open))kallsyms_lookup_name("sys_open");
+    if (!orig_open) {
+        pr_err("failed to get sys_open address\n");
+        return -1;
     }
 
-    hook_err_t err = HOOK_NO_ERR;
-
-    if (!strcmp("function_pointer_hook", margs)) {
-        pr_info("function pointer hook ...");
-        hook_type = FUNCTION_POINTER_CHAIN;
-        err = fp_hook_syscalln(__NR_open, 3, before_open, 0, 0);
-        if (err) goto out;
-        err = fp_hook_syscalln(__NR_openat, 4, before_openat, 0, 0);
-    } else if (!strcmp("inline_hook", margs)) {
-        pr_info("inline hook ...");
-        hook_type = INLINE_CHAIN;
-        err = inline_hook_syscalln(__NR_open, 3, before_open, 0, 0);
-        if (err) goto out;
-        err = inline_hook_syscalln(__NR_openat, 4, before_openat, 0, 0);
-    } else {
-        pr_warn("unknown args: %s\n", margs);
-        return 0;
+    orig_openat = (typeof(orig_openat))kallsyms_lookup_name("sys_openat");
+    if (!orig_openat) {
+        pr_err("failed to get sys_openat address\n");
+        return -1;
     }
 
-out:
+    // Hook the open syscall using hook_wrap3
+    hook_err_t err = hook_wrap3((void *)orig_open, before_open, 0, 0);
     if (err) {
-        pr_err("hook syscall error: %d\n", err);
-    } else {
-        pr_info("hook syscall success\n");
+        pr_err("hooking open error: %d\n", err);
+        return err;
     }
+
+    // Hook the openat syscall using hook_wrap3
+    err = hook_wrap3((void *)orig_openat, before_openat, 0, 0);
+    if (err) {
+        pr_err("hooking openat error: %d\n", err);
+        return err;
+    }
+
+    pr_info("sys_open and sys_openat hooked successfully\n");
     return 0;
 }
 
 static long syscall_hook_demo_exit(void *__user reserved) {
     pr_info("kpm-syscall-hook-demo exit ...\n");
 
-    if (hook_type == INLINE_CHAIN) {
-        inline_unhook_syscall(__NR_open, before_open, 0);
-        inline_unhook_syscall(__NR_openat, before_openat, 0);
-    } else if (hook_type == FUNCTION_POINTER_CHAIN) {
-        fp_unhook_syscall(__NR_open, before_open, 0);
-        fp_unhook_syscall(__NR_openat, before_openat, 0);
-    }
+    // Unhook the open and openat syscalls
+    hook_unwrap((void *)orig_open, before_open, 0);
+    hook_unwrap((void *)orig_openat, before_openat, 0);
+
     return 0;
 }
 
