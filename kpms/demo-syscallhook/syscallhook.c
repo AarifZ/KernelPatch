@@ -1,9 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
-/* 
- * Copyright (C) 2023 bmax121. All Rights Reserved.
- * Copyright (C) 2024 Assistant. All Rights Reserved.
- */
-
 #include <compiler.h>
 #include <kpmodule.h>
 #include <linux/printk.h>
@@ -13,83 +7,85 @@
 #include <linux/string.h>
 #include <kputils.h>
 #include <asm/current.h>
-#include <linux/errno.h>
 
-KPM_NAME("kpm-path-hiding");
+KPM_NAME("kpm-syscall-hook-demo");
 KPM_VERSION("1.0.0");
 KPM_LICENSE("GPL v2");
-KPM_AUTHOR("Assistant");
-KPM_DESCRIPTION("KernelPatch Module for Hiding Specific Paths");
+KPM_AUTHOR("Bard");
+KPM_DESCRIPTION("KPM Module to Hide Lineage Traces in Open Calls");
 
-enum hook_type hook_type = NONE;
+static char *hidden_dirs[] = {"/system", "/vendor", "/product"};
+static int num_hidden_dirs = sizeof(hidden_dirs) / sizeof(hidden_dirs[0]);
 
-// Function to check if a path should be hidden
-static int should_hide_path(const char *path)
+enum hook_type
 {
-    return (strstr(path, "/system") || strstr(path, "/vendor") || strstr(path, "/product")) &&
-           (strstr(path, "lineage") || strstr(path, "addon.d"));
+  PIDTYPE_PID,
+  PIDTYPE_TGID,
+  PIDTYPE_PGID,
+  PIDTYPE_SID,
+  PIDTYPE_MAX,
+};
+struct pid_namespace;
+pid_t (*__task_pid_nr_ns)(struct task_struct *task, enum pid_type type, struct pid_namespace *ns) = 0;
+
+void before_openat_0(hook_fargs4_t *args, void *udata)
+{
+  int dfd = (int)syscall_argn(args, 0);
+  const char __user *filename = (typeof(filename))syscall_argn(args, 1);
+
+  char buf[1024];
+  compat_strncpy_from_user(buf, filename, sizeof(buf));
+  buf[sizeof(buf) - 1] = '\0'; // Ensure null termination
+
+  struct task_struct *task = current;
+  pid_t pid = -1, tgid = -1;
+  if (__task_pid_nr_ns) {
+    pid = __task_pid_nr_ns(task, PIDTYPE_PID, 0);
+    tgid = __task_pid_nr_ns(task, PIDTYPE_TGID, 0);
+  }
+
+  bool hide_path = false;
+  for (int i = 0; i < num_hidden_dirs; i++) {
+    if (strstr(buf, hidden_dirs[i])) {
+      hide_path = true;
+      break;
+    }
+  }
+
+  if (hide_path) {
+    pr_info("Hiding path from access for pid %d, tgid %d: %s\n", pid, tgid, buf);
+    args->args[1] = (void *)"/dev/null";
+  } else {
+    pr_info("Opening file: %s\n", buf);
+  }
 }
 
-void before_openat(hook_fargs4_t *args, void *udata)
+static long syscall_hook_demo_init(const char *args, const char *event, void *__user reserved)
 {
-    const char __user *filename = (typeof(filename))syscall_argn(args, 1);
-    char buf[1024];
-    
-    // Safely copy the user-space string to kernel space
-    if (strncpy_from_user(buf, filename, sizeof(buf)) < 0) {
-        pr_err("Failed to copy filename from user space\n");
-        return;
-    }
+  pr_info("kpm-syscall-hook-demo init ...\n");
 
-    pr_info("Attempting to open: %s\n", buf);
+  __task_pid_nr_ns = (typeof(__task_pid_nr_ns))kallsyms_lookup_name("__task_pid_nr_ns");
+  pr_info("kernel function __task_pid_nr_ns addr: %llx\n", __task_pid_nr_ns);
 
-    // Check if the path should be hidden
-    if (should_hide_path(buf)) {
-        pr_info("Hiding path from access: %s\n", buf);
-        args->local.data0 = 1; // Set flag to indicate hiding
-        syscall_set_argn(args, 1, "/dev/null");
-    } else {
-        args->local.data0 = 0;
-    }
+  hook_err_t err = inline_hook_syscalln(__NR_openat, 4, before_openat_0, 0, 0);
+
+  if (err) {
+    pr_err("hook openat error: %d\n", err);
+  } else {
+    pr_info("hook openat success\n");
+  }
+
+  return 0;
 }
 
-void after_openat(hook_fargs4_t *args, void *udata)
+static long kpm-syscall-hook-demo_exit(void *__user reserved)
 {
-    // If we're hiding the path, return -ENOENT (No such file or directory)
-    if (args->local.data0) {
-        syscall_set_retval((hook_fargs_t *)args, -ENOENT);
-    }
+  pr_info("syscall_hook_demo exit ...\n");
+
+  inline_unhook_syscalln(__NR_openat, before_openat_0, 0);
+
+  return 0;
 }
 
-static long path_hiding_init(const char *args, const char *event, void *__user reserved)
-{
-    pr_info("kpm-path-hiding init ...\n");
-
-    hook_err_t err = HOOK_NO_ERR;
-
-    // Use function pointer hook for this example
-    hook_type = FUNCTION_POINTER_CHAIN;
-    err = fp_hook_syscalln(__NR_openat, 4, before_openat, after_openat, NULL);
-
-    if (err) {
-        pr_err("hook openat error: %d\n", err);
-    } else {
-        pr_info("hook openat success\n");
-    }
-
-    return 0;
-}
-
-static long path_hiding_exit(void *__user reserved)
-{
-    pr_info("kpm-path-hiding exit ...\n");
-
-    if (hook_type == FUNCTION_POINTER_CHAIN) {
-        fp_unhook_syscalln(__NR_openat, before_openat, after_openat);
-    }
-
-    return 0;
-}
-
-KPM_INIT(path_hiding_init);
-KPM_EXIT(path_hiding_exit);
+KPM_INIT(syscall_hook_demo_init);
+KPM_EXIT(syscall_hook_demo_exit);
